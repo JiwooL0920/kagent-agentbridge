@@ -1,0 +1,20 @@
+# Build stage
+FROM golang:1.22-alpine AS builder
+
+WORKDIR /build
+
+COPY go.mod go.sum ./
+RUN go mod download
+
+COPY . .
+
+RUN CGO_ENABLED=0 GOOS=linux go build -o stream-dispatcher ./cmd/stream-dispatcher
+
+# Runtime stage
+FROM alpine:3
+
+RUN apk add --no-cache ca-certificates
+
+COPY --from=builder /build/stream-dispatcher /usr/local/bin/
+
+ENTRYPOINT ["stream-dispatcher"]
