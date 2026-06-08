@@ -39,9 +39,9 @@ func DialSentinel(ctx context.Context, cfg SentinelConfig) (*Conn, error) {
 			continue
 		}
 
-	reader := bufio.NewReader(sentinelConn)
-	if _, err := sentinelConn.Write([]byte("*3\r\n$8\r\nSENTINEL\r\n$23\r\nget-master-addr-by-name\r\n$" + 
-		strconv.Itoa(len(cfg.MasterName)) + "\r\n" + cfg.MasterName + "\r\n")); err != nil {
+		reader := bufio.NewReader(sentinelConn)
+		if _, err := sentinelConn.Write([]byte("*3\r\n$8\r\nSENTINEL\r\n$23\r\nget-master-addr-by-name\r\n$" +
+			strconv.Itoa(len(cfg.MasterName)) + "\r\n" + cfg.MasterName + "\r\n")); err != nil {
 			sentinelConn.Close()
 			lastErr = err
 			continue
@@ -279,6 +279,35 @@ func (c *Conn) XAutoClaim(stream, group, consumer string, minIdleMs int64, start
 
 	messages, err := parseStreamMessages(arr[1])
 	return messages, nextStart, err
+}
+
+func (c *Conn) XGroupCreateMkStream(stream, group, startID string) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	if startID == "" {
+		startID = "$"
+	}
+
+	args := []string{"XGROUP", "CREATE", stream, group, startID, "MKSTREAM"}
+	cmd := buildRESP2Array(args)
+	if _, err := c.conn.Write([]byte(cmd)); err != nil {
+		return err
+	}
+
+	resp, err := parseRESP2(c.reader)
+	if err != nil {
+		if strings.Contains(err.Error(), "BUSYGROUP") {
+			return nil
+		}
+		return err
+	}
+
+	if str, ok := resp.(string); ok && str == "OK" {
+		return nil
+	}
+
+	return fmt.Errorf("XGROUP CREATE failed: %v", resp)
 }
 
 func (c *Conn) HGetAll(key string) (map[string]string, error) {
