@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"time"
 )
 
 type TaskSender interface {
@@ -25,15 +26,18 @@ func NewStreamPublisher(conn *Conn, stream string, logger *slog.Logger) *StreamP
 }
 
 func (p *StreamPublisher) SendTask(ctx context.Context, agent, requestID, text string) (string, string, string, error) {
-	artifactKey := fmt.Sprintf("artifact:%s", requestID)
+	artifactKey := fmt.Sprintf("incident:artifact:%s:alert", requestID)
 	if err := p.conn.Set(artifactKey, text, 86400); err != nil {
 		return "", "", "", fmt.Errorf("store artifact: %w", err)
 	}
 
 	fields := map[string]string{
-		"agent":      agent,
-		"request_id": requestID,
-		"text":       text,
+		"workflow_id":  requestID,
+		"agent_target": agent,
+		"artifact_key": artifactKey,
+		"step":         "investigation",
+		"status":       "pending",
+		"timestamp":    time.Now().UTC().Format(time.RFC3339),
 	}
 
 	id, err := p.conn.XAdd(p.stream, 1000, fields)
