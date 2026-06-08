@@ -3,6 +3,8 @@ package a2a
 import (
 	"log/slog"
 	"net/http"
+
+	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
 )
 
 // Client handles A2A JSON-RPC communication with kagent coordinator-agent.
@@ -17,7 +19,7 @@ type Client struct {
 func NewClient(baseURL, bearerToken string, logger *slog.Logger) *Client {
 	return &Client{
 		baseURL:     baseURL,
-		httpClient:  &http.Client{},
+		httpClient:  &http.Client{Transport: otelhttp.NewTransport(http.DefaultTransport)},
 		bearerToken: bearerToken,
 		logger:      logger,
 	}
@@ -25,10 +27,10 @@ func NewClient(baseURL, bearerToken string, logger *slog.Logger) *Client {
 
 // TaskSendRequest represents the JSON-RPC request to send a task.
 type TaskSendRequest struct {
-	JSONRPC string          `json:"jsonrpc"`
-	ID      string          `json:"id"`
-	Method  string          `json:"method"`
-	Params  TaskSendParams  `json:"params"`
+	JSONRPC string         `json:"jsonrpc"`
+	ID      string         `json:"id"`
+	Method  string         `json:"method"`
+	Params  TaskSendParams `json:"params"`
 }
 
 // TaskSendParams contains the message and configuration for task sending.

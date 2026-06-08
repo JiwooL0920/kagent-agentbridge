@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"maps"
 	"strconv"
 	"sync"
 	"sync/atomic"
@@ -12,9 +13,16 @@ import (
 
 	"github.com/jiwoolee/kagent-agentbridge/internal/a2a"
 	"github.com/jiwoolee/kagent-agentbridge/internal/redis"
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
+	"go.opentelemetry.io/otel/propagation"
+	"go.opentelemetry.io/otel/trace"
 )
 
 const dlqMaxLen = 1000
+
+var tracer = otel.Tracer("github.com/jiwoolee/kagent-agentbridge/stream-dispatcher")
 
 type Dispatcher struct {
 	cfg      Config
@@ -165,34 +173,48 @@ func (d *Dispatcher) dispatchBatch(ctx context.Context, messages []redis.StreamM
 }
 
 func (d *Dispatcher) processMessage(ctx context.Context, msg redis.StreamMessage) {
+	carrier := propagation.MapCarrier(msg.Fields)
+	ctx = otel.GetTextMapPropagator().Extract(ctx, carrier)
+	ctx, span := tracer.Start(ctx, "redis.incident-events.process", trace.WithSpanKind(trace.SpanKindConsumer))
+	defer span.End()
+	span.SetAttributes(attribute.String("redis.stream.id", msg.ID))
+
 	agent := msg.Fields["agent_target"]
 	if agent == "" {
 		step := msg.Fields["step"]
 		if step == "" {
+			span.SetStatus(codes.Error, "missing step and agent_target")
 			d.moveToDLQ(msg, "missing step and agent_target")
 			return
 		}
 
 		resolved, err := d.router.Resolve(ctx, step)
 		if err != nil {
+			span.RecordError(err)
+			span.SetStatus(codes.Error, err.Error())
 			d.moveToDLQ(msg, err.Error())
 			return
 		}
 		agent = resolved
 	}
+	span.SetAttributes(attribute.String("agent.target", agent))
 
 	artifactKey := msg.Fields["artifact_key"]
 	if artifactKey == "" {
+		span.SetStatus(codes.Error, "missing artifact_key")
 		d.moveToDLQ(msg, "missing artifact_key")
 		return
 	}
 
 	artifact, err := d.conn.Get(artifactKey)
 	if err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, "artifact lookup failed")
 		d.moveToDLQ(msg, fmt.Sprintf("get artifact %q: %v", artifactKey, err))
 		return
 	}
 	if artifact == "" {
+		span.SetStatus(codes.Error, "artifact not found")
 		d.moveToDLQ(msg, fmt.Sprintf("artifact not found: %s", artifactKey))
 		return
 	}
@@ -200,26 +222,30 @@ func (d *Dispatcher) processMessage(ctx context.Context, msg redis.StreamMessage
 	workflowID := msg.Fields["workflow_id"]
 	step := msg.Fields["step"]
 	if workflowID == "" || step == "" {
+		span.SetStatus(codes.Error, "missing workflow_id or step")
 		d.moveToDLQ(msg, "missing workflow_id or step")
 		return
 	}
 
 	requestID := workflowID + "-" + step
 	if _, _, _, err := d.a2a.SendTask(ctx, agent, requestID, artifact); err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, "send task failed")
 		d.moveToDLQ(msg, fmt.Sprintf("send task to agent %q: %v", agent, err))
 		return
 	}
 
 	if err := d.conn.XAck(d.cfg.StreamName, d.cfg.ConsumerGroup, msg.ID); err != nil {
+		span.RecordError(err)
 		d.logger.Error("xack failed", "messageID", msg.ID, "error", err)
 	}
+
+	span.SetStatus(codes.Ok, "processed")
 }
 
 func (d *Dispatcher) moveToDLQ(msg redis.StreamMessage, reason string) {
 	fields := make(map[string]string, len(msg.Fields)+3)
-	for k, v := range msg.Fields {
-		fields[k] = v
-	}
+	maps.Copy(fields, msg.Fields)
 
 	fields["error"] = reason
 	fields["original_id"] = msg.ID

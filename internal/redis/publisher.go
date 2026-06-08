@@ -5,6 +5,9 @@ import (
 	"fmt"
 	"log/slog"
 	"time"
+
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/propagation"
 )
 
 type TaskSender interface {
@@ -38,6 +41,15 @@ func (p *StreamPublisher) SendTask(ctx context.Context, agent, requestID, text s
 		"step":         "investigation",
 		"status":       "pending",
 		"timestamp":    time.Now().UTC().Format(time.RFC3339),
+	}
+
+	carrier := propagation.MapCarrier{}
+	otel.GetTextMapPropagator().Inject(ctx, carrier)
+	if traceparent := carrier.Get("traceparent"); traceparent != "" {
+		fields["traceparent"] = traceparent
+	}
+	if tracestate := carrier.Get("tracestate"); tracestate != "" {
+		fields["tracestate"] = tracestate
 	}
 
 	id, err := p.conn.XAdd(p.stream, 1000, fields)

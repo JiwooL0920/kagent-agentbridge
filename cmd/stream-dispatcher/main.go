@@ -9,6 +9,7 @@ import (
 	"syscall"
 
 	streamdispatcher "github.com/jiwoolee/kagent-agentbridge/internal/stream-dispatcher"
+	"github.com/jiwoolee/kagent-agentbridge/internal/telemetry"
 )
 
 func main() {
@@ -16,6 +17,12 @@ func main() {
 	defer cancel()
 
 	log.Println("starting stream-dispatcher...")
+	shutdownTelemetry, err := telemetry.Init(ctx, "stream-dispatcher")
+	if err != nil {
+		log.Fatalf("init telemetry: %v", err)
+	}
+	defer shutdownTelemetry()
+
 	cfg, err := streamdispatcher.LoadConfigFromEnv()
 	if err != nil {
 		log.Fatalf("load config: %v", err)

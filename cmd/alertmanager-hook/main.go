@@ -7,12 +7,13 @@ import (
 	"os"
 	"os/signal"
 
-	alertmanagerhook "github.com/jiwoolee/kagent-agentbridge/internal/alertmanager-hook"
 	"github.com/jiwoolee/kagent-agentbridge/internal/a2a"
+	alertmanagerhook "github.com/jiwoolee/kagent-agentbridge/internal/alertmanager-hook"
 	"github.com/jiwoolee/kagent-agentbridge/internal/config"
 	"github.com/jiwoolee/kagent-agentbridge/internal/httpapi"
 	"github.com/jiwoolee/kagent-agentbridge/internal/redis"
 	"github.com/jiwoolee/kagent-agentbridge/internal/server"
+	"github.com/jiwoolee/kagent-agentbridge/internal/telemetry"
 )
 
 func main() {
@@ -26,6 +27,13 @@ func main() {
 		logger.Error("failed to load config", "error", err)
 		os.Exit(1)
 	}
+
+	shutdownTelemetry, err := telemetry.Init(ctx, "alertmanager-hook")
+	if err != nil {
+		logger.Error("failed to initialize telemetry", "error", err)
+		os.Exit(1)
+	}
+	defer shutdownTelemetry()
 
 	sender, cleanup, err := buildSender(ctx, cfg, logger)
 	if err != nil {
