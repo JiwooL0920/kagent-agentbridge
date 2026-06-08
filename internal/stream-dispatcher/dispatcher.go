@@ -177,7 +177,15 @@ func (d *Dispatcher) processMessage(ctx context.Context, msg redis.StreamMessage
 	ctx = otel.GetTextMapPropagator().Extract(ctx, carrier)
 	ctx, span := tracer.Start(ctx, "redis.incident-events.process", trace.WithSpanKind(trace.SpanKindConsumer))
 	defer span.End()
-	span.SetAttributes(attribute.String("redis.stream.id", msg.ID))
+	span.SetAttributes(
+		attribute.String("messaging.system", "redis"),
+		attribute.String("messaging.operation", "process"),
+		attribute.String("messaging.message.id", msg.ID),
+		attribute.String("workflow.id", msg.Fields["workflow_id"]),
+		attribute.String("workflow.step", msg.Fields["step"]),
+		attribute.String("workflow.status", msg.Fields["status"]),
+		attribute.String("workflow.timestamp", msg.Fields["timestamp"]),
+	)
 
 	agent := msg.Fields["agent_target"]
 	if agent == "" {
@@ -227,13 +235,38 @@ func (d *Dispatcher) processMessage(ctx context.Context, msg redis.StreamMessage
 		return
 	}
 
+	span.SetAttributes(
+		attribute.String("artifact.key", artifactKey),
+		attribute.Int("artifact.size_bytes", len(artifact)),
+		attribute.String("artifact.preview", truncateStr(artifact, 300)),
+	)
+
 	requestID := workflowID + "-" + step
-	if _, _, _, err := d.a2a.SendTask(ctx, agent, requestID, artifact); err != nil {
+	ctx, a2aSpan := tracer.Start(ctx, "a2a.dispatch",
+		trace.WithSpanKind(trace.SpanKindClient),
+		trace.WithAttributes(
+			attribute.String("a2a.agent", agent),
+			attribute.String("a2a.request_id", requestID),
+			attribute.String("a2a.method", "message/send"),
+		),
+	)
+	taskID, contextID, state, err := d.a2a.SendTask(ctx, agent, requestID, artifact)
+	if err != nil {
+		a2aSpan.RecordError(err)
+		a2aSpan.SetStatus(codes.Error, "send task failed")
+		a2aSpan.End()
 		span.RecordError(err)
 		span.SetStatus(codes.Error, "send task failed")
 		d.moveToDLQ(msg, fmt.Sprintf("send task to agent %q: %v", agent, err))
 		return
 	}
+	a2aSpan.SetAttributes(
+		attribute.String("a2a.task_id", taskID),
+		attribute.String("a2a.context_id", contextID),
+		attribute.String("a2a.state", state),
+	)
+	a2aSpan.SetStatus(codes.Ok, "dispatched")
+	a2aSpan.End()
 
 	if err := d.conn.XAck(d.cfg.StreamName, d.cfg.ConsumerGroup, msg.ID); err != nil {
 		span.RecordError(err)
@@ -261,4 +294,12 @@ func (d *Dispatcher) moveToDLQ(msg redis.StreamMessage, reason string) {
 	}
 
 	d.logger.Warn("message moved to dlq", "messageID", msg.ID, "reason", reason)
+}
+
+
+func truncateStr(s string, maxLen int) string {
+	if len(s) <= maxLen {
+		return s
+	}
+	return s[:maxLen] + "..."
 }

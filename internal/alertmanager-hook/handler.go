@@ -73,6 +73,18 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			continue
 		}
 
+		span.SetAttributes(
+			attribute.String("alert.name", alert.Labels["alertname"]),
+			attribute.String("alert.severity", alert.Labels["severity"]),
+			attribute.String("alert.namespace", alert.Labels["namespace"]),
+			attribute.String("alert.pod", alert.Labels["pod"]),
+			attribute.String("alert.node", alert.Labels["node"]),
+			attribute.String("alert.cluster", alert.Labels["cluster"]),
+			attribute.String("alert.summary", alert.Annotations["summary"]),
+			attribute.String("alert.description", alert.Annotations["description"]),
+			attribute.String("alert.status", alert.Status),
+		)
+
 		requestID := fmt.Sprintf("amhook-%d-%d", time.Now().UnixNano(), i)
 		text := FormatAlertMessage(alert)
 
